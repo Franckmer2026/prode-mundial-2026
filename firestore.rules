@@ -1,0 +1,79 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+        getUserData().role == 'admin';
+    }
+
+    function getMatch(matchId) {
+      return get(/databases/$(database)/documents/matches/$(matchId));
+    }
+
+    // Rules for Users
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      // Allow users to create their own user document on sign up
+      allow create: if isAuthenticated() && isOwner(userId) 
+        && request.resource.data.role == 'user' 
+        && request.resource.data.totalPoints == 0;
+      // Allow users to update only their name or email. Admin can update everything.
+      allow update: if isAdmin() || (
+        isOwner(userId) 
+        && request.resource.data.role == resource.data.role 
+        && request.resource.data.totalPoints == resource.data.totalPoints
+      );
+      allow delete: if isAdmin();
+    }
+
+    // Rules for Matches
+    match /matches/{matchId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Rules for Predictions
+    match /predictions/{predictionId} {
+      allow read: if isAuthenticated();
+      
+      // User can create/edit predictions under these rules
+      allow create: if isAuthenticated() 
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.pointsEarned == null
+        && getMatch(request.resource.data.matchId).exists()
+        && request.time < getMatch(request.resource.data.matchId).data.dateTime;
+
+      allow update: if isAdmin() || (
+        isAuthenticated()
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.matchId == resource.data.matchId
+        && request.resource.data.pointsEarned == null // normal users can't touch score calculation
+        && getMatch(resource.data.matchId).exists()
+        && request.time < getMatch(resource.data.matchId).data.dateTime
+      );
+
+      allow delete: if isAdmin() || (
+        isAuthenticated()
+        && resource.data.userId == request.auth.uid
+        && getMatch(resource.data.matchId).exists()
+        && request.time < getMatch(resource.data.matchId).data.dateTime
+      );
+    }
+  }
+}
